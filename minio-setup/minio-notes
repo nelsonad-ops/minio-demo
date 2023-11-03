@@ -1,0 +1,217 @@
+minio demo.md
+
+Install MinIO operator
+(
+  set -x; cd "$(mktemp -d)" &&
+  OS="$(uname | tr '[:upper:]' '[:lower:]')" &&
+  ARCH="$(uname -m | sed -e 's/x86_64/amd64/' -e 's/\(arm\)\(64\)\?.*/\1\2/' -e 's/aarch64$/arm64/')" &&
+  KREW="krew-${OS}_${ARCH}" &&
+  curl -fsSLO "https://github.com/kubernetes-sigs/krew/releases/latest/download/${KREW}.tar.gz" &&
+  tar zxvf "${KREW}.tar.gz" &&
+  ./"${KREW}" install krew
+)
+export PATH="${KREW_ROOT:-$HOME/.krew}/bin:$PATH"
+#For Windows
+https://krew.sigs.k8s.io/docs/user-guide/setup/install/#windows
+
+kubectl krew update
+kubectl krew install minio
+kubectl minio version
+kubectl minio init
+kubectl get all --namespace minio-operator
+curl http://169.254.169.254/latest/meta-data/public-ipv4
+kubectl minio proxy -n minio-operator
+forwards UI traffic to port 9090
+
+Create MinIO tenant
+kubectl create ns minio-demo
+kubectl minio tenant create minio-demo --capacity 100Gi --servers 1 --volumes 1 --namespace minio-demo --storage-class px-csi-db
+kubectl minio tenant create minio-http --capacity 100Gi --servers 1 --volumes 1 --namespace minio-http --storage-class px-csi-db --disable-tls
+
+example output:
+
+Tenant 'minio-demo' created in 'minio-demo' Namespace
+
+  Username: <example username>
+  Password: <example password>
+  Note: Copy the credentials to a secure location. MinIO will not display these again.
+
+APPLICATION	SERVICE NAME      	NAMESPACE 	SERVICE TYPE	SERVICE PORT
+MinIO      	minio             	minio-demo	ClusterIP   	443
+Console    	minio-demo-console	minio-demo	ClusterIP   	9443
+
+kubectl port-forward service/minio 8443:443 -n minio-demo
+kubectl port-forward service/minio-demo-console  -n minio-demo 9443:9443
+
+minio.minio-http.svc.cluster.local
+<example access key>
+<example secret key>
+pxbucket
+
+PX Object service:
+https://docs.portworx.com/operations/operate-kubernetes/storage-operations/object/installation/
+kubectl get stc -n portworx
+kubectl edit stc px-deploy-1 -n portworx
+
+spec:
+  ...
+  stork:
+    enabled: true
+    args:
+      px-object-controller: "true"
+
+kubectl create secret generic px-object-s3-admin-credentials --from-literal=access-key-id=<example-access-key> --from-literal=secret-access-key="example-access-key"
+kubectl -n portworx create secret generic px-object-fb-admin-credentials --from-literal=access-key-id=<example-access-key> --from-literal=secret-access-key=<example-secret-key>  
+
+kubectl edit stc px-deploy-1 -n portworx
+spec:
+  env:
+  - name: OBJECT_SERVICE_FB_ACCESS_KEY_ID
+    valueFrom:
+      secretKeyRef:
+        name: px-object-fb-admin-credentials
+        key: access-key-id
+  - name: OBJECT_SERVICE_FB_SECRET_ACCESS_KEY
+    valueFrom:
+      secretKeyRef:
+        name: px-object-fb-admin-credentials
+        key: secret-access-key
+
+vi pxbucketclass.yaml
+apiVersion: object.portworx.io/v1alpha1
+kind: PXBucketClass
+metadata:
+  name: pbclass-fb
+deletionPolicy: Delete
+parameters:
+  object.portworx.io/backend-type: PureFBDriver
+  object.portworx.io/endpoint: <local-ip>
+
+kubectl apply -f pxbucketclass.yaml
+
+vi pxbucketclaim.yaml
+apiVersion: object.portworx.io/v1alpha1
+kind: PXBucketClaim
+metadata:
+  name: fb-pbc
+  namespace: default
+spec:
+  bucketClassName: pbclass-fb
+kubectl apply -f pxbucketclaim.yaml
+kubectl get pxbucketclaim
+
+yum install s3cmd -y
+s3cmd --configure
+s3cmd ls --no-check-certificate
+
+kubectl -n portworx create secret generic px-object-s3-admin-credentials --from-literal=access-key-id=<example-access-key>  --from-literal=secret-access-key=<example-secret-key>  
+
+vi s3bucketclass.yaml
+apiVersion: object.portworx.io/v1alpha1
+kind: PXBucketClass
+metadata:
+  name: pbclass-s3
+region: us-west-1
+deletionPolicy: Delete
+parameters:
+  object.portworx.io/backend-type: S3Driver
+  object.portworx.io/endpoint: minio.minio-demo.svc.cluster.local
+
+Ohmu7FyBd6K3QOcxuXUf
+1bXhzpNV0vnFzRA0JaRjzZMRR0sstRqMw6rrsHu5
+kubectl -n portworx create secret generic px-object-fb-admin-credentials --from-literal=access-key-id=<example-access-key>  --from-literal=secret-access-key=<example-secret-key> 
+
+[root@master-1 ~]# kubectl get pods -n minio-http
+NAME                READY   STATUS    RESTARTS   AGE
+minio-http-ss-0-0   2/2     Running   0          70m
+warp-0              1/1     Running   0          101s
+warp-1              1/1     Running   0          101s
+warp-2              1/1     Running   0          100s
+warp-3              0/1     Pending   0          100s
+[root@master-1 ~]# vi warp-job.yaml
+[root@master-1 ~]# kubectl get svc -n minio-http
+NAME                 TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)    AGE
+minio                ClusterIP   10.101.185.198   <none>        80/TCP     71m
+minio-http-console   ClusterIP   10.111.163.204   <none>        9090/TCP   71m
+minio-http-hl        ClusterIP   None             <none>        9000/TCP   71m
+warp                 ClusterIP   None             <none>        7761/TCP   2m29s
+
+[root@master-1 ~]# cat warp.yaml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: warp
+  labels:
+    app: warp
+spec:
+  publishNotReadyAddresses: true
+  clusterIP: None
+  ports:
+    - port: 7761
+      name: warp
+  selector:
+    app: warp
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: warp
+  labels:
+    app: warp
+spec:
+  serviceName: warp
+  podManagementPolicy: Parallel
+  replicas: 3
+  selector:
+    matchLabels:
+      app: warp
+  template:
+    metadata:
+      name: warp
+      labels:
+        app: warp
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - warp
+              topologyKey: "kubernetes.io/hostname"
+      containers:
+        - name: warp
+          image: "minio/warp:latest"
+          imagePullPolicy: Always
+          args:
+            - client
+          ports:
+            - name: http
+              containerPort: 7761
+
+[root@master-1 ~]# cat warp-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: warp-job
+spec:
+  template:
+    spec:
+      containers:
+      - name: warp-job
+        env:
+          - name: WARP_ACCESS_KEY
+            value: "Ohmu7FyBd6K3QOcxuXUf"
+          - name: WARP_SECRET_KEY
+            value: "1bXhzpNV0vnFzRA0JaRjzZMRR0sstRqMw6rrsHu5"
+        image: "minio/warp:latest"
+        imagePullPolicy: Always
+        args: [ "get", "--bucket", "test0", "--warp-client", "warp-{0...2}.warp.minio-http.svc.cluster.local:7761", "--host", "minio-http-ss-0-0.minio-http-hl.minio-http.svc.cluster.local:9000", "--concurrent", "64", "--obj.size", "32MiB" ]
+      restartPolicy: Never
+  backoffLimit: 4
+
+
+
